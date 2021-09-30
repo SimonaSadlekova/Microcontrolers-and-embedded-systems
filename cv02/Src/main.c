@@ -28,6 +28,8 @@
 #define LED_TIME_SHORT 100
 #define LED_TIME_LONG  1000
 
+volatile uint32_t Tick;
+
 void EXTI0_1_IRQHandler(void)
 {
 	if (EXTI->PR & EXTI_PR_PR0) { // check line 0 has triggered the IT
@@ -36,7 +38,6 @@ void EXTI0_1_IRQHandler(void)
 	}
 }
 
-volatile uint32_t Tick;
 
 void SysTick_Handler(void)
 {
