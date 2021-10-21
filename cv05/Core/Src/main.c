@@ -22,7 +22,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "sct.h"
+#include "stdio.h"
+#include "string.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,12 +34,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ADC_Q 12
-/* Temperature sensor calibration value address */
-#define TEMP110_CAL_ADDR ((uint16_t*) ((uint32_t) 0x1FFFF7C2))
-#define TEMP30_CAL_ADDR ((uint16_t*) ((uint32_t) 0x1FFFF7B8))
-/* Internal voltage reference calibration value address */
-#define VREFINT_CAL_ADDR ((uint16_t*) ((uint32_t) 0x1FFFF7BA))
+#define RX_BUFFER_LEN 64
+#define CMD_BUFFER_LEN 256
+static uint8_t uart_rx_buf[RX_BUFFER_LEN];
+static volatile uint16_t uart_rx_read_ptr = 0;
+#define uart_rx_write_ptr (RX_BUFFER_LEN - hdma_usart2_rx.Instance->CNDTR)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -46,9 +47,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-ADC_HandleTypeDef hadc;
-
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
 
@@ -57,82 +57,91 @@ UART_HandleTypeDef huart2;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_ADC_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+uint8_t c;
 
-static volatile uint32_t raw_pot;
-static volatile uint32_t channel_0;
-static volatile uint32_t raw_temp;
-static volatile uint32_t raw_volt;
-
-
-
-/* HAL_ADC_ConvCpltCallback() */
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+int _write(int file, char const *buf, int n)
 {
-	static uint32_t avg_pot = 0;
-	static uint32_t channel;
-	//raw_pot = HAL_ADC_GetValue(hadc);
-
-	if (channel==0){
-		raw_pot = avg_pot >> ADC_Q;
-		avg_pot -= raw_pot;
-		avg_pot += HAL_ADC_GetValue(hadc);
-	}
-
-	if(channel==1){
-		raw_temp = HAL_ADC_GetValue(hadc);
-	}
-
-	if(channel==2){
-		raw_volt = HAL_ADC_GetValue(hadc);
-	}
-
-	if (__HAL_ADC_GET_FLAG(hadc, ADC_FLAG_EOS)) channel = 0;
-	else channel++;
+ /* stdout redirection to UART2 */
+ HAL_UART_Transmit(&huart2, (uint8_t*)(buf), n, HAL_MAX_DELAY);
+ return n;
 }
 
-void prepinac(uint32_t voltage, int32_t temperature, uint16_t pot, uint8_t led){
+static void uart_process_command(char *cmd)
+{
+	printf("prijato: '%s'\n", cmd);
 
-static uint32_t time;
-	uint32_t new_time;
-	static enum { SHOW_POT, SHOW_VOLT, SHOW_TEMP } state = SHOW_POT;
-
-	if (HAL_GPIO_ReadPin(S1_GPIO_Port,S1_Pin)==0){
-		state = SHOW_VOLT;
-		time=HAL_GetTick();
+	char *token;
+	token = strtok(cmd, " ");
+	if (strcasecmp(token, "HELLO") == 0) {
+		printf("Komunikace OK\n");
 	}
-
-	else if (HAL_GPIO_ReadPin(S2_GPIO_Port,S2_Pin)==0){
-		state = SHOW_TEMP;
-		time=HAL_GetTick();
-	}
-
-	else if (state == SHOW_VOLT) {
-		sct_value(voltage,8);
-		new_time=HAL_GetTick();
-		if (time+1000<new_time){
-			state = SHOW_POT;
+	else if (strcasecmp(token, "LED1") == 0) {
+		token = strtok(NULL, " ");
+		if (strcasecmp(token, "ON") == 0){
+			HAL_GPIO_WritePin(LED1_GPIO_Port,LED1_Pin,GPIO_PIN_SET);
+			printf("LED1 ON\n");
 		}
-
-	}
-	else if (state == SHOW_TEMP) {
-		sct_value(temperature,8);
-		new_time=HAL_GetTick();
-		if (time+1000<new_time){
-			state = SHOW_POT;
+		else if (strcasecmp(token, "OFF")==0){
+			HAL_GPIO_WritePin(LED1_GPIO_Port,LED1_Pin,GPIO_PIN_RESET);
+			printf("LED1 OFF\n");
 		}
 	}
-	else if (state == SHOW_POT) {
-		sct_value(pot,led);
+	else if (strcasecmp(token, "LED2") == 0){
+		token = strtok(NULL, " ");
+		if (strcasecmp(token, "ON") == 0){
+			HAL_GPIO_WritePin(LED2_GPIO_Port,LED2_Pin,GPIO_PIN_SET);
+			printf("LED2 ON\n");
+		}
+		else if (strcasecmp(token, "OFF")==0){
+			HAL_GPIO_WritePin(LED2_GPIO_Port,LED2_Pin,GPIO_PIN_RESET);
+			printf("LED2 OFF\n");
+		}
+	}
+	else if (strcasecmp(token, "STATUS")==0){
+		token = strtok(NULL, " ");
+		if (strcasecmp(token, "LED1") == 0){
+			if (HAL_GPIO_ReadPin(LED1_GPIO_Port,LED1_Pin)){
+				printf("LED1 ON\n");
+			}
+			else {
+				printf("LED1 OFF\n");
+			}
+		}
+		else if (strcasecmp(token, "LED2") == 0){
+			if (HAL_GPIO_ReadPin(LED2_GPIO_Port,LED2_Pin)){
+				printf("LED2 ON\n");
+			}
+			else {
+				printf("LED2 OFF\n");
+				}
+			}
+	}
+	printf("OK\n");
+}
+
+
+static void uart_byte_available(uint8_t c)
+{
+	static uint16_t cnt;
+	static char data[CMD_BUFFER_LEN];
+	if (cnt < CMD_BUFFER_LEN && c >= 32 && c <= 126) data[cnt++] = c;
+	if ((c == '\n' || c == '\r') && cnt > 0) {
+		data[cnt] = '\0';
+		uart_process_command(data);
+		cnt = 0;
 	}
 }
+
+
+
 /* USER CODE END 0 */
 
 /**
@@ -163,12 +172,10 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
-  MX_ADC_Init();
   /* USER CODE BEGIN 2 */
-  sct_init();
-  HAL_ADCEx_Calibration_Start(&hadc);
-  HAL_ADC_Start_IT(&hadc);
+  HAL_UART_Receive_DMA(&huart2, uart_rx_buf, RX_BUFFER_LEN);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -178,27 +185,14 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	/*cislo = (raw_pot*500)/4096;
-	bargraf = (cislo*9)/500;
-	sct_value(cislo, bargraf);
-	*/
+	 /* HAL_UART_Receive(&huart2, &c, 1, HAL_MAX_DELAY);
+	  HAL_UART_Transmit(&huart2, &c, 1, HAL_MAX_DELAY);*/
 
-	uint16_t pot;
-	uint8_t led;
-	uint32_t voltage = 330 * (*VREFINT_CAL_ADDR) / raw_volt;
-
-	int32_t temperature = (raw_temp - (int32_t)(*TEMP30_CAL_ADDR));
-
-	temperature = temperature * (int32_t)(110 - 30);
-	temperature = temperature / (int32_t)(*TEMP110_CAL_ADDR - *TEMP30_CAL_ADDR);
-	temperature = temperature + 30;
-
-	pot=(raw_pot*500)/4096;
-	led=(raw_pot*9)/4096;
-
-	prepinac(voltage,temperature,pot,led);
-
-	HAL_Delay(50);
+	  while (uart_rx_read_ptr != uart_rx_write_ptr) {
+		  uint8_t b = uart_rx_buf[uart_rx_read_ptr];
+		  if (++uart_rx_read_ptr >= RX_BUFFER_LEN) uart_rx_read_ptr = 0; // increase read pointer
+		  uart_byte_available(b); // process every received byte with the RX state machine
+	  }
   }
   /* USER CODE END 3 */
 }
@@ -215,11 +209,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_HSI14;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSI14State = RCC_HSI14_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.HSI14CalibrationValue = 16;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL12;
@@ -240,72 +232,6 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-}
-
-/**
-  * @brief ADC Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_ADC_Init(void)
-{
-
-  /* USER CODE BEGIN ADC_Init 0 */
-
-  /* USER CODE END ADC_Init 0 */
-
-  ADC_ChannelConfTypeDef sConfig = {0};
-
-  /* USER CODE BEGIN ADC_Init 1 */
-
-  /* USER CODE END ADC_Init 1 */
-  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
-  hadc.Instance = ADC1;
-  hadc.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
-  hadc.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc.Init.ScanConvMode = ADC_SCAN_DIRECTION_FORWARD;
-  hadc.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  hadc.Init.LowPowerAutoWait = DISABLE;
-  hadc.Init.LowPowerAutoPowerOff = DISABLE;
-  hadc.Init.ContinuousConvMode = ENABLE;
-  hadc.Init.DiscontinuousConvMode = DISABLE;
-  hadc.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-  hadc.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc.Init.DMAContinuousRequests = DISABLE;
-  hadc.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
-  if (HAL_ADC_Init(&hadc) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure for the selected ADC regular channel to be converted.
-  */
-  sConfig.Channel = ADC_CHANNEL_0;
-  sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
-  sConfig.SamplingTime = ADC_SAMPLETIME_239CYCLES_5;
-  if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure for the selected ADC regular channel to be converted.
-  */
-  sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
-  if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure for the selected ADC regular channel to be converted.
-  */
-  sConfig.Channel = ADC_CHANNEL_VREFINT;
-  if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN ADC_Init 2 */
-
-  /* USER CODE END ADC_Init 2 */
-
 }
 
 /**
@@ -344,6 +270,22 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel4_5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel4_5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel4_5_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -359,10 +301,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, LED1_Pin|LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, SCT_NOE_Pin|SCT_CLK_Pin|SCT_SDI_Pin|SCT_NLA_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -370,25 +312,19 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : S2_Pin S1_Pin */
-  GPIO_InitStruct.Pin = S2_Pin|S1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
+  /*Configure GPIO pins : LED1_Pin LD2_Pin */
+  GPIO_InitStruct.Pin = LED1_Pin|LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : SCT_NOE_Pin SCT_CLK_Pin SCT_SDI_Pin SCT_NLA_Pin */
-  GPIO_InitStruct.Pin = SCT_NOE_Pin|SCT_CLK_Pin|SCT_SDI_Pin|SCT_NLA_Pin;
+  /*Configure GPIO pin : LED2_Pin */
+  GPIO_InitStruct.Pin = LED2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(LED2_GPIO_Port, &GPIO_InitStruct);
 
 }
 
