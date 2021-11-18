@@ -75,10 +75,11 @@ void zamek(){
 			HAL_GPIO_WritePin(LD1_GPIO_Port,LD1_Pin,GPIO_PIN_SET);
 			pos=0;
 		}
+	}
 	else{
 		pos = 0;
 	}
-	}
+
 }
 
 /* USER CODE END PFP */
@@ -140,6 +141,7 @@ int main(void)
 
 	  if (key != -1){
 	  	printf("Stisknuto:%d\n", key);
+	  	zamek();
 	  	HAL_Delay(500);
 	  	key = -1;
 	  }
